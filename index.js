@@ -153,9 +153,19 @@ function reconn(reason, Num, res) {
   ) {
     console.log("Connection lost, reconnecting...");
     connector(Num, res);
+  } else if (reason === DisconnectReason.loggedOut) {
+
+
+    const sessionDir = path.join(__dirname, "session");
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+    connector(Num, res);
   } else {
     console.log(`Disconnected! reason: ${reason}`);
-    session.end();
+    try {
+      session.end();
+    } catch {}
   }
 }
 
