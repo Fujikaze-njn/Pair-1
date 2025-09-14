@@ -273,7 +273,7 @@
 
         <div class="form-group">
             <label for="number">Phone Number</label>
-            <input type="tel" id="number" placeholder="+1 234 567 8900" maxlength="20">
+            <input type="tel" id="number" placeholder="234567890123" maxlength="20">
         </div>
 
         <button id="pairBtn">
@@ -287,8 +287,6 @@
                 Enter this code in WhatsApp Web to connect
             </p>
         </div>
-
-
     </div>
 
     <script>
@@ -314,24 +312,14 @@
             }, 300);
         }
 
-        // Phone number formatting
+        // Phone number input - only allow numbers, no formatting
         document.getElementById('number').addEventListener('input', function(e) {
+            // Remove all non-digit characters
             let value = e.target.value.replace(/\D/g, '');
-            if (value.length > 0 && !value.startsWith('1')) {
-                value = value;
-            }
             
-            // Format the number
-            if (value.length > 0) {
-                if (value.length <= 3) {
-                    value = '+' + value;
-                } else if (value.length <= 6) {
-                    value = '+' + value.slice(0, -3) + ' ' + value.slice(-3);
-                } else if (value.length <= 10) {
-                    value = '+' + value.slice(0, -6) + ' ' + value.slice(-6, -3) + ' ' + value.slice(-3);
-                } else {
-                    value = '+' + value.slice(0, -10) + ' ' + value.slice(-10, -7) + ' ' + value.slice(-7, -4) + ' ' + value.slice(-4);
-                }
+            // Limit to reasonable phone number length
+            if (value.length > 15) {
+                value = value.slice(0, 15);
             }
             
             e.target.value = value;
@@ -345,8 +333,9 @@
             const codeContainer = document.getElementById('codeContainer');
             const codeElement = document.getElementById('code');
             
-            if (!num || num.replace(/\D/g, '').length < 10) {
-                alert('Please enter a valid phone number');
+            // Validate phone number (must be at least 10 digits)
+            if (!num || num.length < 10) {
+                alert('Please enter a valid phone number (at least 10 digits)');
                 return;
             }
             
@@ -356,6 +345,7 @@
             codeContainer.style.display = 'none';
             
             try {
+                // Send the raw number without any formatting
                 const res = await fetch(`/pair?number=${encodeURIComponent(num)}`);
                 const data = await res.json();
                 
@@ -401,4 +391,4 @@
         });
     </script>
 </body>
-  </html>
+</html>
