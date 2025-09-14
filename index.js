@@ -18,12 +18,12 @@ import {
 import config from './config.js';
 
 const app = express();
-const port = 7860;
+const port = 3000;
 const sessionDir = './session';
 const msgRetryCounterCache = new NodeCache();
 const mutex = new Mutex();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-// Ensure session directory exists
+
 if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
 }
@@ -32,7 +32,6 @@ const supabase = createClient(config.DBURL, config.SUPKEY);
 app.use(express.static(path.join('./static')));
 app.use(express.json());
 
-// Store active sessions
 const activeSessions = new Map();
 
 async function connector(number, res) {
@@ -49,58 +48,57 @@ async function connector(number, res) {
         console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
         
         const session = makeWASocket({
-            auth: { 
-                creds: state.creds, 
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }).child({ level: 'fatal' })) 
-            },
-            logger: pino({ level: 'fatal' }).child({ level: 'fatal' }),
+            auth: state,
+            logger: pino({ level: 'debug' }),
             version,
             browser: Browsers.macOS('Safari'),
             markOnlineOnConnect: true,
             msgRetryCounterCache
         });
 
-        // Store session reference
+        session.ev.on('creds.update', saveCreds);
         activeSessions.set(sessionId, { session, sessionPath });
 
-        session.ev.on('creds.update', saveCreds);
-
-        if (!session.authState.creds.registered) {
+        if (!state?.creds?.registered) {
             if (!number) {
-                return res.status(400).json({ message: 'Input your number' });
+                if (res && !res.headersSent) return res.status(400).json({ message: 'Input your number' });
+                return;
             }
+
             await delay(1500);
             const cleaned = number.replace(/\D/g, '');
             
             try {
                 const code = await session.requestPairingCode(cleaned);
-                const formattedCode = code?.match(/.{1,4}/g)?.join('-');
+                const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
                 
-                return res.json({ 
-                    code: formattedCode, 
-                    sessionId: sessionId,
-                    message: 'Use this code to pair your device'
-                });
-            } catch (error) {
-                console.error('Error requesting pairing code:', error);
-                return res.status(500).json({ error: 'Failed to generate pairing code' });
+                if (res && !res.headersSent) {
+                    return res.json({ 
+                        code: formattedCode, 
+                        sessionId: sessionId,
+                        message: 'Use this code to pair your device'
+                    });
+                } else {
+                    console.log('Pairing code:', formattedCode, 'sessionId:', sessionId);
+                    return;
+                }
+            } catch (err) {
+                console.error('Error requesting pairing code:', err?.message ?? err);
+                if (res && !res.headersSent) return res.status(500).json({ error: 'Failed to generate pairing code', details: err?.message });
+                return;
             }
         }
 
-        // 🔥 Single unified connection.update listener
         session.ev.on('connection.update', async (update) => {
+            console.log('connection.update:', JSON.stringify(update));
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                console.log('QR code generated:', qr);
-            }
-
-            if (connection === 'connecting') {
-                console.log('Connecting...');
+                console.log('QR string present (length):', qr.length);
             }
 
             if (connection === 'open') {
-                console.log('Connection established successfully');
+                console.log('Connection established successfully for', sessionId);
                 
                 try {
                     const files = fs.readdirSync(sessionPath);
@@ -118,58 +116,46 @@ async function connector(number, res) {
                             });
                     }));
 
-                    // Send session ID to user
                     try {
-                        await session.sendMessage(session.user.id, { 
-                            text: `Session ID: ${sessionId}\nKeep this safe for future use.` 
+                        await session.sendMessage(session.user?.id, { 
+                            text: `Session ID: ${sessionId}\nKeep this safe.` 
                         });
-                    } catch (sendError) {
-                        console.warn('Could not send message to user:', sendError);
+                    } catch (errSend) {
+                        console.warn('Could not send message to connected account:', errSend?.message ?? errSend);
                     }
-
-                    // Cleanup local files
-                    importantFiles.forEach(f => {
-                        try {
-                            fs.unlinkSync(path.join(sessionPath, f));
-                        } catch (unlinkError) {
-                            console.warn('Could not delete file:', unlinkError);
-                        }
-                    });
 
                 } catch (uploadError) {
                     console.error('Upload error:', uploadError);
                 }
 
             } else if (connection === 'close') {
-                const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-                console.log('Connection closed with reason:', reason);
+                const code = new Boom(lastDisconnect?.error).output?.statusCode;
+                console.log('Connection closed, reason code:', code);
                 
-                if (reason === DisconnectReason.loggedOut) {
+                if (code === DisconnectReason.loggedOut) {
                     try { 
                         session.end(); 
-                    } catch (endError) {
-                        console.warn('Error ending session:', endError);
+                    } catch (e) { 
+                        console.warn('Error ending session:', e); 
                     }
                 } else {
-                    // Attempt to reconnect
+                    console.log('Attempting reconnect in 5s for', sessionId);
                     setTimeout(() => {
                         connector(number, null).catch(console.error);
                     }, 5000);
                 }
                 
-                // Cleanup
                 activeSessions.delete(sessionId);
                 try {
                     fs.rmSync(sessionPath, { recursive: true, force: true });
-                } catch (cleanupError) {
-                    console.warn('Cleanup error:', cleanupError);
+                } catch (err) {
+                    console.warn('Cleanup error:', err);
                 }
             }
         });
 
     } catch (error) {
         console.error('Session creation error:', error);
-        // Cleanup on error
         try {
             fs.rmSync(sessionPath, { recursive: true, force: true });
         } catch (cleanupError) {
@@ -203,7 +189,6 @@ app.get('/pair', async (req, res) => {
     }
 });
 
-// Add health check endpoint
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
@@ -212,7 +197,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Add cleanup endpoint
 app.get('/cleanup', (req, res) => {
     const sessionId = req.query.sessionId;
     if (sessionId && activeSessions.has(sessionId)) {
