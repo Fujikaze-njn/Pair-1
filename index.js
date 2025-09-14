@@ -106,10 +106,11 @@ async function connector(Num, res) {
         await uploadSessionFiles(sessionDir, sessionId);
         console.log("Session uploaded with ID:", sessionId);
 
-        const cleanNum = Num.replace(/[^0-9]/g, "");
-        await session.sendMessage(`${cleanNum}@s.whatsapp.net`, {
-    image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
-    caption: `┏━━━━━━━━━━━━━━━━━━━━━━┓
+        if (Num) {
+          const cleanNum = Num.replace(/[^0-9]/g, "");
+          await session.sendMessage(`${cleanNum}@s.whatsapp.net`, {
+            image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
+            caption: `┏━━━━━━━━━━━━━━━━━━━━━━┓
 ┃              ✦ *NEXUS BOT* ✦              ┃
 ┃                                          ┃
 ┃ 🔑 *Session ID:*                         ┃
@@ -123,7 +124,8 @@ async function connector(Num, res) {
 ┃                                          ┃
 ┃ ⚡ Powered by *Nexus* ⚡                  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━┛`
-});
+          });
+        }
 
         if (res && !res.headersSent) {
           res.json({ sessionId });
@@ -139,17 +141,17 @@ async function connector(Num, res) {
       }
     } else if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
-      reconn(reason);
+      reconn(reason, Num, res);
     }
   });
 }
 
-function reconn(reason) {
+function reconn(reason, Num, res) {
   if (
     [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
   ) {
     console.log("Connection lost, reconnecting...");
-    connector();
+    connector(Num, res);
   } else {
     console.log(`Disconnected! reason: ${reason}`);
     session.end();
