@@ -109,22 +109,23 @@ async function connector(Num, res) {
         if (Num) {
           const cleanNum = Num.replace(/[^0-9]/g, "");
           await session.sendMessage(`${cleanNum}@s.whatsapp.net`, {
-            image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
-            caption: `┏━━━━━━━━━━━━━━━━━━━━━━┓
-┃              ✦ *NEXUS BOT* ✦              ┃
-┃                                          ┃
-┃ 🔑 *Session ID:*                         ┃
-┃ \`\`\`${sessionId}\`\`\`                    ┃
-┃                                          ┃
-┃ 🌐 Channel:                              ┃
-┃ https://whatsapp.com/channel/0029Vb66P6J8aKvJNoSXEy1A ┃
-┃                                          ┃
-┃ 💻 GitHub:                               ┃
-┃ https://github.com/KING-DAVIDX           ┃
-┃                                          ┃
-┃ ⚡ Powered by *Nexus* ⚡                  ┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛`
-          });
+  image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
+  caption: `✦━━━━━━━━━━━━━━━✦
+        🚀 *NEXUS BOT* 🚀
+✦━━━━━━━━━━━━━━━✦
+
+🔑 *Session ID:*  
+\`\`\`${sessionId}\`\`\`
+
+🌐 *Channel:*  
+https://whatsapp.com/channel/0029Vb66P6J8aKvJNoSXEy1A  
+
+💻 *GitHub:*  
+https://github.com/KING-DAVIDX  
+
+⚡ Powered by *Nexus* ⚡
+`
+});
         }
 
         if (res && !res.headersSent) {
