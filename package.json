@@ -1,0 +1,17 @@
+{
+  "name": "paircode-web",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.51.0",
+    "@hapi/boom": "^10.0.1",
+    "async-mutex": "^0.5.0",
+    "baileys": "latest",
+    "express": "^4.21.1",
+    "node-cache": "^5.1.2",
+    "pino": "^9.4.0"
+  }
+}
