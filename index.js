@@ -1,204 +1,165 @@
-import express from 'express';
-import fs from 'fs';
-import path from 'path';
-import pino from 'pino';
-import NodeCache from 'node-cache';
-import { Mutex } from 'async-mutex';
-import { createClient } from '@supabase/supabase-js';
+// index.mjs
+import express from "express";
+import fs from "fs";
+import pino from "pino";
+import NodeCache from "node-cache";
 import {
-  useMultiFileAuthState,
-  Browsers,
-  makeWASocket,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  DisconnectReason
-} from 'baileys';
-import config from './config.js';
+    default as makeWASocket,
+    useMultiFileAuthState,
+    delay,
+    Browsers,
+    makeCacheableSignalKeyStore,
+    DisconnectReason
+} from "baileys";
+import { Mutex } from "async-mutex";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createClient } from "@supabase/supabase-js";
+import config from "./config.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = 3000;
-
-const sessionRoot = path.join(process.cwd(), 'session');
-if (!fs.existsSync(sessionRoot)) fs.mkdirSync(sessionRoot, { recursive: true });
-
 const msgRetryCounterCache = new NodeCache();
 const mutex = new Mutex();
-const delay = ms => new Promise(r => setTimeout(r, ms));
+let session;
 
+app.use(express.static(path.join(__dirname, "static")));
+
+// Supabase client
 const supabase = createClient(config.DBURL, config.SUPKEY);
 
-app.use(express.static(path.join(process.cwd(), 'static')));
-app.use(express.json());
-
-/**
- * Upload important session files to Supabase
- */
-async function saveToSupabase(sessionId, sessionPath) {
-  if (!fs.existsSync(sessionPath)) return;
-  const files = fs.readdirSync(sessionPath);
-  const importantFiles = files.filter(f =>
-    f.startsWith('app-state-sync') || f === 'creds.json' || f.startsWith('session')
-  );
-
-  await Promise.all(
-    importantFiles.map(async f => {
-      const filePath = path.join(sessionPath, f);
-      const fileContent = fs.readFileSync(filePath);
-      await supabase.storage
-        .from('session')
-        .upload(`${sessionId}/${f}`, fileContent, {
-          contentType: 'application/json',
-          upsert: true
-        });
-    })
-  );
-
-  console.log(`✅ Saved session ${sessionId} to Supabase`);
+function generateSessionId() {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let randomPart = "";
+    for (let i = 0; i < 8; i++) {
+        randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `Nexus_${randomPart}`;
 }
 
-/**
- * Cleanup only if logged out
- */
-function cleanup(sessionId, sessionPath, socket = null) {
-  try {
-    if (socket) {
-      try {
-        socket.end();
-      } catch {}
+async function uploadSessionFiles(sessionDir, sessionId) {
+    const files = fs.readdirSync(sessionDir);
+
+    for (const file of files) {
+        const filePath = path.join(sessionDir, file);
+        const buffer = fs.readFileSync(filePath);
+
+        const remotePath = `${sessionId}/${file}`;
+        const { error } = await supabase.storage
+            .from("session")
+            .upload(remotePath, buffer, {
+                cacheControl: "3600",
+                upsert: true,
+                contentType: "application/json"
+            });
+
+        if (error) throw error;
     }
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-    }
-    console.log(`🧹 Cleaned up session ${sessionId}`);
-  } catch (err) {
-    console.warn(`Cleanup error for ${sessionId}:`, err?.message ?? err);
-  }
+
+    return sessionId; // return only the ID (not URL)
 }
 
-/**
- * Connector function
- */
-async function connector(number, res) {
-  const cleaned = number.replace(/\D/g, '');
-  const sessionId = `Nexus_${cleaned}`;
-  const sessionPath = path.join(sessionRoot, sessionId);
-  if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
+async function connector(Num, res) {
+    const sessionDir = path.join(__dirname, "session");
+    if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir);
+    }
 
-  let socket = null;
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`⚡ Using WA v${version.join('.')}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-    socket = makeWASocket({
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
-      },
-      logger: pino({ level: 'fatal' }),
-      version,
-      browser: Browsers.macOS('Safari'),
-      markOnlineOnConnect: true,
-      msgRetryCounterCache
+    session = makeWASocket({
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(
+                state.keys,
+                pino({ level: "fatal" }).child({ level: "fatal" })
+            )
+        },
+        logger: pino({ level: "fatal" }).child({ level: "fatal" }),
+        browser: Browsers.macOS("Safari"),
+        markOnlineOnConnect: true,
+        msgRetryCounterCache
     });
 
-    socket.ev.on('creds.update', async () => {
-      try {
-        await saveCreds();
-      } catch (e) {
-        console.warn('⚠️ saveCreds failed', e?.message ?? e);
-      }
-    });
-
-    // Pairing if not registered
-    if (!state?.creds?.registered) {
-      try {
+    if (!session.authState.creds.registered) {
         await delay(1500);
-        const code = await socket.requestPairingCode(cleaned);
-        const formatted = code?.match(/.{1,4}/g)?.join('-') ?? code;
-        if (res && !res.headersSent) {
-          return res.json({
-            code: formatted,
-            sessionId,
-            message: 'Use this code to pair your device'
-          });
+        Num = Num.replace(/[^0-9]/g, "");
+        const code = await session.requestPairingCode(Num);
+        if (!res.headersSent) {
+            res.send({ code: code?.match(/.{1,4}/g)?.join("-") });
         }
-      } catch (err) {
-        console.error('❌ Error requesting pairing code:', err?.message ?? err);
-        if (res && !res.headersSent) {
-          res.status(500).json({ error: 'Failed to generate pairing code', details: err?.message });
-        }
-        cleanup(sessionId, sessionPath, socket);
-        return;
-      }
     }
 
-    // Connection updates
-    socket.ev.on('connection.update', async update => {
-      const { connection, lastDisconnect } = update;
-
-      if (connection === 'open') {
-        console.log(`✅ Connected for ${sessionId}`);
-
-        // Upload in background
-        saveToSupabase(sessionId, sessionPath).catch(e =>
-          console.warn('Upload failed:', e?.message ?? e)
-        );
-
-        if (res && !res.headersSent) {
-          res.json({ sessionId, message: 'Device connected and session saved' });
-        }
-      }
-
-      if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log(`⚠️ Connection closed for ${sessionId}. Reason:`, reason);
-
-        if (
-          [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
-        ) {
-          console.log('🔄 Reconnecting...');
-          connector(number, null);
-        } else if (reason === DisconnectReason.loggedOut) {
-          cleanup(sessionId, sessionPath, socket);
-        }
-      }
+    session.ev.on("creds.update", async () => {
+        await saveCreds();
     });
-  } catch (err) {
-    console.error('❌ Session creation error:', err?.message ?? err);
-    cleanup(sessionId, sessionPath, socket);
-    if (res && !res.headersSent) {
-      res.status(500).json({ error: 'Failed to create session' });
-    }
-  }
+
+    session.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === "open") {
+            console.log("Connected successfully");
+            await delay(3000);
+            try {
+                const sessionId = generateSessionId();
+                await uploadSessionFiles(sessionDir, sessionId);
+                console.log("Session uploaded with ID:", sessionId);
+
+                // Send ID back via WhatsApp (optional)
+                await session.sendMessage(session.user.id, {
+                    image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
+                    caption: sessionId
+                });
+
+                // Also respond to API if still open
+                if (!res.headersSent) {
+                    res.json({ sessionId });
+                }
+            } catch (error) {
+                console.error("Upload error:", error);
+            } finally {
+                if (fs.existsSync(sessionDir)) {
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                }
+            }
+        } else if (connection === "close") {
+            const reason = lastDisconnect?.error?.output?.statusCode;
+            reconn(reason);
+        }
+    });
 }
 
-/**
- * Routes
- */
-app.get('/pair', async (req, res) => {
-  const number = req.query.number || req.query.code;
-  if (!number) {
-    return res.status(400).json({ message: 'Number required' });
-  }
-
-  const release = await mutex.acquire();
-  try {
-    await connector(number, res);
-  } catch (err) {
-    console.error('Pairing error:', err?.message ?? err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Error connecting to WhatsApp' });
+function reconn(reason) {
+    if (
+        [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
+    ) {
+        console.log("Connection lost, reconnecting...");
+        connector();
+    } else {
+        console.log(`Disconnected! reason: ${reason}`);
+        session.end();
     }
-  } finally {
-    release();
-  }
-});
+}
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get("/pair", async (req, res) => {
+    const Num = req.query.code;
+    if (!Num) {
+        return res.status(418).json({ message: "Phone number is required" });
+    }
+
+    const release = await mutex.acquire();
+    try {
+        await connector(Num, res);
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({ error: "Something went wrong" });
+    } finally {
+        release();
+    }
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+    console.log(`Running on PORT:${port}`);
 });
