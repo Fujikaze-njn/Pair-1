@@ -3,15 +3,22 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "pm2:start": "pm2 start index.js --name paircode-web",
+    "pm2:restart": "pm2 restart paircode-web",
+    "pm2:stop": "pm2 stop paircode-web",
+    "pm2:delete": "pm2 delete paircode-web"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.51.0",
     "@hapi/boom": "^10.0.1",
     "async-mutex": "^0.5.0",
-    "baileys": "^7.0.0-rc.2",
+    "baileys": "6.7.18",
     "express": "^4.21.1",
     "node-cache": "^5.1.2",
     "pino": "^9.4.0"
+  },
+  "devDependencies": {
+    "pm2": "^5.4.2"
   }
 }

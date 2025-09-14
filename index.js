@@ -3,12 +3,12 @@ import fs from "fs";
 import pino from "pino";
 import NodeCache from "node-cache";
 import {
-    default as makeWASocket,
-    useMultiFileAuthState,
-    delay,
-    Browsers,
-    makeCacheableSignalKeyStore,
-    DisconnectReason
+  default as makeWASocket,
+  useMultiFileAuthState,
+  delay,
+  Browsers,
+  makeCacheableSignalKeyStore,
+  DisconnectReason
 } from "baileys";
 import { Mutex } from "async-mutex";
 import path from "path";
@@ -27,89 +27,87 @@ let session;
 
 app.use(express.static(path.join(__dirname, "static")));
 
-// Supabase client
 const supabase = createClient(config.DBURL, config.SUPKEY);
 
 function generateSessionId() {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let randomPart = "";
-    for (let i = 0; i < 8; i++) {
-        randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return `Nexus_${randomPart}`;
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let randomPart = "";
+  for (let i = 0; i < 8; i++) {
+    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `Nexus_${randomPart}`;
 }
 
 async function uploadSessionFiles(sessionDir, sessionId) {
-    const files = fs.readdirSync(sessionDir);
+  const files = fs.readdirSync(sessionDir);
 
-    for (const file of files) {
-        const filePath = path.join(sessionDir, file);
-        const buffer = fs.readFileSync(filePath);
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    const buffer = fs.readFileSync(filePath);
 
-        const remotePath = `${sessionId}/${file}`;
-        const { error } = await supabase.storage
-            .from("session")
-            .upload(remotePath, buffer, {
-                cacheControl: "3600",
-                upsert: true,
-                contentType: "application/json"
-            });
+    const remotePath = `${sessionId}/${file}`;
+    const { error } = await supabase.storage
+      .from("session")
+      .upload(remotePath, buffer, {
+        cacheControl: "3600",
+        upsert: true,
+        contentType: "application/json"
+      });
 
-        if (error) throw error;
-    }
+    if (error) throw error;
+  }
 
-    return sessionId; // return only the ID (not URL)
+  return sessionId;
 }
 
 async function connector(Num, res) {
-    const sessionDir = path.join(__dirname, "session");
-    if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir);
+  const sessionDir = path.join(__dirname, "session");
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir);
+  }
+
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+  session = makeWASocket({
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(
+        state.keys,
+        pino({ level: "fatal" }).child({ level: "fatal" })
+      )
+    },
+    logger: pino({ level: "fatal" }).child({ level: "fatal" }),
+    browser: Browsers.macOS("Safari"),
+    markOnlineOnConnect: true,
+    msgRetryCounterCache
+  });
+
+  if (!session.authState.creds.registered) {
+    await delay(1500);
+    Num = Num.replace(/[^0-9]/g, "");
+    const code = await session.requestPairingCode(Num);
+    if (!res.headersSent) {
+      res.send({ code: code?.match(/.{1,4}/g)?.join("-") });
     }
+  }
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+  session.ev.on("creds.update", async () => {
+    await saveCreds();
+  });
 
-    session = makeWASocket({
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(
-                state.keys,
-                pino({ level: "fatal" }).child({ level: "fatal" })
-            )
-        },
-        logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-        browser: Browsers.macOS("Safari"),
-        markOnlineOnConnect: true,
-        msgRetryCounterCache
-    });
+  session.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect } = update;
 
-    if (!session.authState.creds.registered) {
-        await delay(1500);
-        Num = Num.replace(/[^0-9]/g, "");
-        const code = await session.requestPairingCode(Num);
-        if (!res.headersSent) {
-            res.send({ code: code?.match(/.{1,4}/g)?.join("-") });
-        }
-    }
+    if (connection === "open") {
+      console.log("Connected successfully");
+      await delay(3000);
+      try {
+        const sessionId = generateSessionId();
+        await uploadSessionFiles(sessionDir, sessionId);
+        console.log("Session uploaded with ID:", sessionId);
 
-    session.ev.on("creds.update", async () => {
-        await saveCreds();
-    });
-
-    session.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === "open") {
-            await delay(3000);
-            try {
-                const sessionId = generateSessionId();
-                await uploadSessionFiles(sessionDir, sessionId);
-
-                // Clean number for WA JID
-                let jidNum = Num.replace(/[^0-9]/g, "");
-                let jid = `${jidNum}@s.whatsapp.net`;
-
-                await session.sendMessage(jid, {
+        const cleanNum = Num.replace(/[^0-9]/g, "");
+        await session.sendMessage(`${cleanNum}@s.whatsapp.net`, {
     image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
     caption: `┏━━━━━━━━━━━━━━━━━━━━━━┓
 ┃              ✦ *NEXUS BOT* ✦              ┃
@@ -127,45 +125,54 @@ async function connector(Num, res) {
 ┗━━━━━━━━━━━━━━━━━━━━━━┛`
 });
 
-                if (res && !res.headersSent) {
-                    res.json({ sessionId });
-                }
-            } catch (error) {
-                // silently fail
-            }
-        } else if (connection === "close") {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            reconn(reason);
+        if (res && !res.headersSent) {
+          res.json({ sessionId });
         }
-    });
+        setTimeout(() => {
+          if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            console.log("Session folder deleted locally");
+          }
+        }, 5000);
+      } catch (error) {
+        console.error("Upload error:", error);
+      }
+    } else if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      reconn(reason);
+    }
+  });
 }
 
 function reconn(reason) {
-    if (
-        [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
-    ) {
-        connector();
-    } else {
-        session.end();
-    }
+  if (
+    [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
+  ) {
+    console.log("Connection lost, reconnecting...");
+    connector();
+  } else {
+    console.log(`Disconnected! reason: ${reason}`);
+    session.end();
+  }
 }
 
 app.get("/pair", async (req, res) => {
-    const Num = req.query.code;
-    if (!Num) {
-        return res.status(418).json({ message: "Phone number is required" });
-    }
+  const Num = req.query.code;
+  if (!Num) {
+    return res.status(418).json({ message: "Phone number is required" });
+  }
 
-    const release = await mutex.acquire();
-    try {
-        await connector(Num, res);
-    } catch {
-        res.status(500).json({ error: "Something went wrong" });
-    } finally {
-        release();
-    }
+  const release = await mutex.acquire();
+  try {
+    await connector(Num, res);
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Something went wrong" });
+  } finally {
+    release();
+  }
 });
 
 app.listen(port, () => {
-    console.log(`Running on PORT:${port}`);
+  console.log(`Running on PORT:${port}`);
 });
