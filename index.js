@@ -23,28 +23,22 @@ app.use(express.static(path.join(process.cwd(), 'static')));
 app.use(express.json());
 
 async function saveToSupabase(sessionId, sessionPath) {
-  try {
-    if (!fs.existsSync(sessionPath)) return;
-    const files = fs.readdirSync(sessionPath);
-    const importantFiles = files.filter(f => f.startsWith('app-state-sync') || f === 'creds.json' || f.startsWith('session'));
-
-    await Promise.all(
-      importantFiles.map(async f => {
-        const filePath = path.join(sessionPath, f);
-        const fileContent = fs.readFileSync(filePath);
-        await supabase.storage
-          .from('session')
-          .upload(`${sessionId}/${f}`, fileContent, {
-            contentType: 'application/json',
-            upsert: true
-          });
-      })
-    );
-    console.log(`✅ Saved session ${sessionId} to Supabase`);
-
-  } catch (uploadError) {
-    console.error('Upload error:', uploadError?.message ?? uploadError);
-  }
+  if (!fs.existsSync(sessionPath)) return;
+  const files = fs.readdirSync(sessionPath);
+  const importantFiles = files.filter(f => f.startsWith('app-state-sync') || f === 'creds.json' || f.startsWith('session'));
+  await Promise.all(
+    importantFiles.map(async f => {
+      const filePath = path.join(sessionPath, f);
+      const fileContent = fs.readFileSync(filePath);
+      await supabase.storage
+        .from('session')
+        .upload(`${sessionId}/${f}`, fileContent, {
+          contentType: 'application/json',
+          upsert: true
+        });
+    })
+  );
+  console.log(`Saved session ${sessionId} to Supabase`);
 }
 
 function cleanup(sessionId, sessionPath, session = null) {
@@ -52,13 +46,12 @@ function cleanup(sessionId, sessionPath, session = null) {
     if (session) {
       try {
         session.end();
-      } catch (e) {
-      }
+      } catch {}
     }
     if (fs.existsSync(sessionPath)) {
       fs.rmSync(sessionPath, { recursive: true, force: true });
     }
-    console.log(`🧹 Cleaned up session ${sessionId}`);
+    console.log(`Cleaned up session ${sessionId}`);
   } catch (err) {
     console.warn(`Cleanup error for ${sessionId}:`, err?.message ?? err);
   }
@@ -67,19 +60,13 @@ function cleanup(sessionId, sessionPath, session = null) {
 async function connector(number, res) {
   const sessionId = `Nexus_${crypto.randomBytes(8).toString('hex')}`;
   const sessionPath = path.join(sessionDir, sessionId);
-
   if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
-
-  const timeout = setTimeout(() => {
-    console.log(`⏱️ Session ${sessionId} timed out`);
-    cleanup(sessionId, sessionPath);
-  }, 10 * 60 * 1000);
 
   let baileysSession = null;
   try {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(`Using WA v${version.join('.')}`);
 
     baileysSession = makeWASocket({
       auth: {
@@ -89,7 +76,7 @@ async function connector(number, res) {
       logger: pino({ level: 'fatal' }),
       version,
       browser: Browsers.macOS('Safari'),
-      markOnlineOnConnect: false,
+      markOnlineOnConnect: true,
       msgRetryCounterCache
     });
 
@@ -103,22 +90,18 @@ async function connector(number, res) {
 
     if (!state?.creds?.registered) {
       if (!number) {
-        clearTimeout(timeout);
-        if (res && !res.headersSent) return res.status(400).json({ message: 'Input your number' });
+        if (res && !res.headersSent) return res.status(400).json({ message: 'Phone number required' });
         return;
       }
-
       const cleaned = number.replace(/\D/g, '');
       try {
         await delay(1500);
         const code = await baileysSession.requestPairingCode(cleaned);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
-
         if (res && !res.headersSent) {
           res.json({ code: formattedCode, sessionId, message: 'Use this code to pair your device' });
         }
       } catch (err) {
-        clearTimeout(timeout);
         console.error('Error requesting pairing code:', err?.message ?? err);
         if (res && !res.headersSent) {
           res.status(500).json({ error: 'Failed to generate pairing code', details: err?.message });
@@ -132,43 +115,33 @@ async function connector(number, res) {
       const { connection, lastDisconnect } = update;
 
       if (connection === 'open') {
-        console.log('✅ Connection established for', sessionId);
-        saveToSupabase(sessionId, sessionPath).catch(e => console.warn('saveToSupabase failed', e?.message ?? e));
-
+        console.log('Connected for', sessionId);
         try {
+          await saveToSupabase(sessionId, sessionPath);
+          console.log(`Uploaded session ${sessionId}`);
           const jid = baileysSession.user?.id;
           if (jid) {
-            await baileysSession.sendMessage(jid, { text: `✅ Session established: ${sessionId}` });
+            await baileysSession.sendMessage(jid, { text: `Session established: ${sessionId}` });
           }
-        } catch (errSend) {
-          console.warn('Could not send message to connected account:', errSend?.message ?? errSend);
+          if (res && !res.headersSent) {
+            res.json({ sessionId, message: 'Device connected and session uploaded' });
+          }
+        } catch (errUpload) {
+          console.warn('Upload failed:', errUpload?.message ?? errUpload);
         }
-
-        clearTimeout(timeout);
+        await delay(5000);
+        cleanup(sessionId, sessionPath, baileysSession);
       }
 
       if (connection === 'close') {
-        clearTimeout(timeout);
-
-        const code = lastDisconnect?.error?.output?.statusCode ?? lastDisconnect?.error?.message;
-        console.log(`Connection closed for ${sessionId}. Reason:`, code);
-
-        try {
-          const reason = lastDisconnect?.error?.output?.statusCode;
-          if (reason === DisconnectReason.loggedOut) {
-            console.log('Logged out - removing stored session');
-            cleanup(sessionId, sessionPath, baileysSession);
-            return;
-          }
-        } catch (e) {
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        console.log(`Connection closed for ${sessionId}. Reason:`, reason);
+        if (reason === DisconnectReason.loggedOut) {
+          cleanup(sessionId, sessionPath, baileysSession);
         }
-
-        cleanup(sessionId, sessionPath, baileysSession);
       }
     });
-
   } catch (error) {
-    clearTimeout(timeout);
     console.error('Session creation error:', error?.message ?? error);
     cleanup(sessionId, sessionPath, baileysSession);
     if (res && !res.headersSent) {
@@ -182,7 +155,6 @@ app.get('/pair', async (req, res) => {
   if (!number) {
     return res.status(400).json({ message: 'Number required' });
   }
-
   const release = await mutex.acquire();
   try {
     await connector(number, res);
@@ -201,5 +173,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
