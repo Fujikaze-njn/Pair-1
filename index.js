@@ -69,7 +69,7 @@ async function connector(number, res) {
             if (!number) {
                 return res.status(400).json({ message: 'Input your number' });
             }
-            
+            await delay(1500);
             const cleaned = number.replace(/\D/g, '');
             
             try {
