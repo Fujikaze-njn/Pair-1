@@ -29,14 +29,10 @@ const supabase = createClient(config.DBURL, config.SUPKEY);
 app.use(express.static(path.join('./static')));
 app.use(express.json());
 
-/**
- * Upload session files to Supabase
- */
 async function saveToSupabase(sessionId, sessionPath) {
     try {
         const files = fs.readdirSync(sessionPath);
         const importantFiles = files.filter(f => f.startsWith('app-state-sync') || f === 'creds.json');
-
         await Promise.all(
             importantFiles.map(async f => {
                 const filePath = path.join(sessionPath, f);
@@ -55,9 +51,6 @@ async function saveToSupabase(sessionId, sessionPath) {
     }
 }
 
-/**
- * Cleanup helper
- */
 function cleanup(sessionId, sessionPath, session = null) {
     try {
         if (session) {
@@ -70,14 +63,10 @@ function cleanup(sessionId, sessionPath, session = null) {
     }
 }
 
-/**
- * Main WhatsApp connector
- */
 async function connector(number, res) {
     const sessionId = `Nexus_${crypto.randomBytes(8).toString('hex')}`;
     const sessionPath = path.join(sessionDir, sessionId);
 
-    // Auto-cleanup timer (10 minutes)
     const timeout = setTimeout(() => {
         console.log(`⏱️ Session ${sessionId} timed out`);
         cleanup(sessionId, sessionPath);
@@ -90,20 +79,17 @@ async function connector(number, res) {
 
         const session = makeWASocket({
             auth: state,
-            logger: pino({ level: 'fatal' }), // quiet logs
+            logger: pino({ level: 'fatal' }),
             version,
             browser: Browsers.macOS('Safari'),
             markOnlineOnConnect: false,
             msgRetryCounterCache
         });
 
-        // Save creds locally + Supabase immediately
         session.ev.on('creds.update', async () => {
             await saveCreds();
-            await saveToSupabase(sessionId, sessionPath);
         });
 
-        // If not registered yet, request a pairing code
         if (!state?.creds?.registered) {
             if (!number) {
                 if (res && !res.headersSent) {
@@ -116,9 +102,7 @@ async function connector(number, res) {
             const cleaned = number.replace(/\D/g, '');
 
             try {
-                // 🔑 Essential delay for valid pairing code
                 await delay(1500);
-
                 const code = await session.requestPairingCode(cleaned);
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
 
@@ -143,9 +127,7 @@ async function connector(number, res) {
 
             if (connection === 'open') {
                 console.log('✅ Connection established for', sessionId);
-
                 await saveToSupabase(sessionId, sessionPath);
-
                 try {
                     if (session.user?.id) {
                         await session.sendMessage(session.user.id, {
@@ -155,8 +137,10 @@ async function connector(number, res) {
                 } catch (errSend) {
                     console.warn('Could not send message to connected account:', errSend?.message ?? errSend);
                 }
+                clearTimeout(timeout);
+            }
 
-                // Clear timeout and cleanup
+            if (connection === 'close') {
                 clearTimeout(timeout);
                 cleanup(sessionId, sessionPath, session);
             }
@@ -171,17 +155,12 @@ async function connector(number, res) {
     }
 }
 
-// === Routes ===
-
 app.get('/pair', async (req, res) => {
     const number = req.query.number;
-
     if (!number) {
         return res.status(400).json({ message: 'Number required' });
     }
-
     const release = await mutex.acquire();
-
     try {
         await connector(number, res);
     } catch (err) {
@@ -201,8 +180,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// === Start server ===
 app.listen(port, () => {
     console.log(`🚀 Server running on port ${port}`);
-    console.log(`🔍 Health check available at http://localhost:${port}/health`);
 });
