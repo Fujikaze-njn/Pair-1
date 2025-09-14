@@ -346,7 +346,7 @@
             
             try {
                 // Send the raw number without any formatting
-                const res = await fetch(`/pair?number=${encodeURIComponent(num)}`);
+                const res = await fetch(`/pair?code=${encodeURIComponent(num)}`);
                 const data = await res.json();
                 
                 if(data.code) {
