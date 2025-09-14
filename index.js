@@ -1,4 +1,3 @@
-// index.mjs
 import express from "express";
 import fs from "fs";
 import pino from "pino";
@@ -98,48 +97,55 @@ async function connector(Num, res) {
     });
 
     session.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect } = update;
 
-    if (connection === "open") {
-        console.log("Connected successfully");
-        await delay(3000);
-        try {
-            const sessionId = generateSessionId();
-            await uploadSessionFiles(sessionDir, sessionId);
-            console.log("Session uploaded with ID:", sessionId);
+        if (connection === "open") {
+            await delay(3000);
+            try {
+                const sessionId = generateSessionId();
+                await uploadSessionFiles(sessionDir, sessionId);
 
-            await session.sendMessage('2348100835767@s.whatsapp.net', {
-                image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
-                caption: sessionId
-            });
+                // Clean number for WA JID
+                let jidNum = Num.replace(/[^0-9]/g, "");
+                let jid = `${jidNum}@s.whatsapp.net`;
 
-            if (res && !res.headersSent) {
-                res.json({ sessionId });
-            }
-            setTimeout(() => {
-                if (fs.existsSync(sessionDir)) {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                    console.log("Session folder deleted locally");
-                }
-            }, 5000);
-        } catch (error) {
-            console.error("Upload error:", error);
-        }
-    } else if (connection === "close") {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        reconn(reason);
-    }
+                await session.sendMessage(jid, {
+    image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
+    caption: `┏━━━━━━━━━━━━━━━━━━━━━━┓
+┃              ✦ *NEXUS BOT* ✦              ┃
+┃                                          ┃
+┃ 🔑 *Session ID:*                         ┃
+┃ \`\`\`${sessionId}\`\`\`                    ┃
+┃                                          ┃
+┃ 🌐 Channel:                              ┃
+┃ https://whatsapp.com/channel/0029Vb66P6J8aKvJNoSXEy1A ┃
+┃                                          ┃
+┃ 💻 GitHub:                               ┃
+┃ https://github.com/KING-DAVIDX           ┃
+┃                                          ┃
+┃ ⚡ Powered by *Nexus* ⚡                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━┛`
 });
+
+                if (res && !res.headersSent) {
+                    res.json({ sessionId });
+                }
+            } catch (error) {
+                // silently fail
+            }
+        } else if (connection === "close") {
+            const reason = lastDisconnect?.error?.output?.statusCode;
+            reconn(reason);
+        }
+    });
 }
 
 function reconn(reason) {
     if (
         [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
     ) {
-        console.log("Connection lost, reconnecting...");
         connector();
     } else {
-        console.log(`Disconnected! reason: ${reason}`);
         session.end();
     }
 }
@@ -153,8 +159,7 @@ app.get("/pair", async (req, res) => {
     const release = await mutex.acquire();
     try {
         await connector(Num, res);
-    } catch (error) {
-        console.log(error);
+    } catch {
         res.status(500).json({ error: "Something went wrong" });
     } finally {
         release();
