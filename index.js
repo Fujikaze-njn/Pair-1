@@ -32,7 +32,7 @@ const supabase = createClient(config.DBURL, config.SUPKEY);
 function generateSessionId() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let randomPart = "";
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 8; i++) {
     randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return `Nexus_${randomPart}`;
@@ -153,19 +153,9 @@ function reconn(reason, Num, res) {
   ) {
     console.log("Connection lost, reconnecting...");
     connector(Num, res);
-  } else if (reason === DisconnectReason.loggedOut) {
-
-
-    const sessionDir = path.join(__dirname, "session");
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    connector(Num, res);
   } else {
     console.log(`Disconnected! reason: ${reason}`);
-    try {
-      session.end();
-    } catch {}
+    session.end();
   }
 }
 
@@ -186,5 +176,6 @@ app.get("/pair", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Running on ${PORT}`));
+app.listen(port, () => {
+  console.log(`Running on PORT:${port}`);
+});
