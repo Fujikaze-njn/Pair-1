@@ -98,37 +98,38 @@ async function connector(Num, res) {
     });
 
     session.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === "open") {
-            console.log("Connected successfully");
-            await delay(3000);
-            try {
-                const sessionId = generateSessionId();
-                await uploadSessionFiles(sessionDir, sessionId);
-                console.log("Session uploaded with ID:", sessionId);
+    const { connection, lastDisconnect } = update;
 
-                // Send ID back via WhatsApp (optional)
-                await session.sendMessage(session.user.id, {
-                    image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
-                    caption: sessionId
-                });
+    if (connection === "open") {
+        console.log("Connected successfully");
+        await delay(3000);
+        try {
+            const sessionId = generateSessionId();
+            await uploadSessionFiles(sessionDir, sessionId);
+            console.log("Session uploaded with ID:", sessionId);
 
-                // Also respond to API if still open
-                if (!res.headersSent) {
-                    res.json({ sessionId });
-                }
-            } catch (error) {
-                console.error("Upload error:", error);
-            } finally {
+            await session.sendMessage(session.user.id, {
+                image: { url: "https://cdn.kordai.biz.id/serve/JpKYo5TCwETY.jpg" },
+                caption: sessionId
+            });
+
+            if (res && !res.headersSent) {
+                res.json({ sessionId });
+            }
+            setTimeout(() => {
                 if (fs.existsSync(sessionDir)) {
                     fs.rmSync(sessionDir, { recursive: true, force: true });
+                    console.log("Session folder deleted locally");
                 }
-            }
-        } else if (connection === "close") {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            reconn(reason);
+            }, 5000);
+        } catch (error) {
+            console.error("Upload error:", error);
         }
-    });
+    } else if (connection === "close") {
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        reconn(reason);
+    }
+});
 }
 
 function reconn(reason) {
