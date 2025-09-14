@@ -9,7 +9,6 @@ import { Boom } from '@hapi/boom';
 import { createClient } from '@supabase/supabase-js';
 import {
     useMultiFileAuthState,
-    delay,
     Browsers,
     makeCacheableSignalKeyStore,
     DisconnectReason,
@@ -47,7 +46,7 @@ async function connector(number, res) {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version, isLatest } = await fetchLatestBaileysVersion();
-  console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+        console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
         
         const session = makeWASocket({
             auth: { 
@@ -71,7 +70,6 @@ async function connector(number, res) {
                 return res.status(400).json({ message: 'Input your number' });
             }
             
-            await delay(1500);
             const cleaned = number.replace(/\D/g, '');
             
             try {
@@ -89,8 +87,17 @@ async function connector(number, res) {
             }
         }
 
+        // 🔥 Single unified connection.update listener
         session.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                console.log('QR code generated:', qr);
+            }
+
+            if (connection === 'connecting') {
+                console.log('Connecting...');
+            }
 
             if (connection === 'open') {
                 console.log('Connection established successfully');
@@ -157,16 +164,6 @@ async function connector(number, res) {
                 } catch (cleanupError) {
                     console.warn('Cleanup error:', cleanupError);
                 }
-            }
-        });
-
-        // Handle errors
-        session.ev.on('connection.update', (update) => {
-            if (update.qr) {
-                console.log('QR code generated:', update.qr);
-            }
-            if (update.connection === 'connecting') {
-                console.log('Connecting...');
             }
         });
 
