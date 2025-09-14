@@ -4,28 +4,42 @@ import path from 'path';
 import pino from 'pino';
 import NodeCache from 'node-cache';
 import { Mutex } from 'async-mutex';
-import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
-import { useMultiFileAuthState, Browsers, makeWASocket, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, DisconnectReason } from 'baileys';
+import {
+  useMultiFileAuthState,
+  Browsers,
+  makeWASocket,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  DisconnectReason
+} from 'baileys';
 import config from './config.js';
 
 const app = express();
 const port = 3000;
-const sessionDir = path.join(process.cwd(), 'session');
+
+const sessionRoot = path.join(process.cwd(), 'session');
+if (!fs.existsSync(sessionRoot)) fs.mkdirSync(sessionRoot, { recursive: true });
+
 const msgRetryCounterCache = new NodeCache();
 const mutex = new Mutex();
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const supabase = createClient(config.DBURL, config.SUPKEY);
+
 app.use(express.static(path.join(process.cwd(), 'static')));
 app.use(express.json());
 
+/**
+ * Upload important session files to Supabase
+ */
 async function saveToSupabase(sessionId, sessionPath) {
   if (!fs.existsSync(sessionPath)) return;
   const files = fs.readdirSync(sessionPath);
-  const importantFiles = files.filter(f => f.startsWith('app-state-sync') || f === 'creds.json' || f.startsWith('session'));
+  const importantFiles = files.filter(f =>
+    f.startsWith('app-state-sync') || f === 'creds.json' || f.startsWith('session')
+  );
+
   await Promise.all(
     importantFiles.map(async f => {
       const filePath = path.join(sessionPath, f);
@@ -38,37 +52,45 @@ async function saveToSupabase(sessionId, sessionPath) {
         });
     })
   );
-  console.log(`Saved session ${sessionId} to Supabase`);
+
+  console.log(`✅ Saved session ${sessionId} to Supabase`);
 }
 
-function cleanup(sessionId, sessionPath, session = null) {
+/**
+ * Cleanup only if logged out
+ */
+function cleanup(sessionId, sessionPath, socket = null) {
   try {
-    if (session) {
+    if (socket) {
       try {
-        session.end();
+        socket.end();
       } catch {}
     }
     if (fs.existsSync(sessionPath)) {
       fs.rmSync(sessionPath, { recursive: true, force: true });
     }
-    console.log(`Cleaned up session ${sessionId}`);
+    console.log(`🧹 Cleaned up session ${sessionId}`);
   } catch (err) {
     console.warn(`Cleanup error for ${sessionId}:`, err?.message ?? err);
   }
 }
 
+/**
+ * Connector function
+ */
 async function connector(number, res) {
-  const sessionId = `Nexus_${crypto.randomBytes(8).toString('hex')}`;
-  const sessionPath = path.join(sessionDir, sessionId);
+  const cleaned = number.replace(/\D/g, '');
+  const sessionId = `Nexus_${cleaned}`;
+  const sessionPath = path.join(sessionRoot, sessionId);
   if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
-  let baileysSession = null;
+  let socket = null;
   try {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
-    console.log(`Using WA v${version.join('.')}`);
+    console.log(`⚡ Using WA v${version.join('.')}`);
 
-    baileysSession = makeWASocket({
+    socket = makeWASocket({
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
@@ -80,81 +102,86 @@ async function connector(number, res) {
       msgRetryCounterCache
     });
 
-    baileysSession.ev.on('creds.update', async () => {
+    socket.ev.on('creds.update', async () => {
       try {
         await saveCreds();
       } catch (e) {
-        console.warn('saveCreds failed', e?.message ?? e);
+        console.warn('⚠️ saveCreds failed', e?.message ?? e);
       }
     });
 
+    // Pairing if not registered
     if (!state?.creds?.registered) {
-      if (!number) {
-        if (res && !res.headersSent) return res.status(400).json({ message: 'Phone number required' });
-        return;
-      }
-      const cleaned = number.replace(/\D/g, '');
       try {
         await delay(1500);
-        const code = await baileysSession.requestPairingCode(cleaned);
-        const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
+        const code = await socket.requestPairingCode(cleaned);
+        const formatted = code?.match(/.{1,4}/g)?.join('-') ?? code;
         if (res && !res.headersSent) {
-          res.json({ code: formattedCode, sessionId, message: 'Use this code to pair your device' });
+          return res.json({
+            code: formatted,
+            sessionId,
+            message: 'Use this code to pair your device'
+          });
         }
       } catch (err) {
-        console.error('Error requesting pairing code:', err?.message ?? err);
+        console.error('❌ Error requesting pairing code:', err?.message ?? err);
         if (res && !res.headersSent) {
           res.status(500).json({ error: 'Failed to generate pairing code', details: err?.message });
         }
-        cleanup(sessionId, sessionPath, baileysSession);
+        cleanup(sessionId, sessionPath, socket);
         return;
       }
     }
 
-    baileysSession.ev.on('connection.update', async update => {
+    // Connection updates
+    socket.ev.on('connection.update', async update => {
       const { connection, lastDisconnect } = update;
 
       if (connection === 'open') {
-        console.log('Connected for', sessionId);
-        try {
-          await saveToSupabase(sessionId, sessionPath);
-          console.log(`Uploaded session ${sessionId}`);
-          const jid = baileysSession.user?.id;
-          if (jid) {
-            await baileysSession.sendMessage(jid, { text: `Session established: ${sessionId}` });
-          }
-          if (res && !res.headersSent) {
-            res.json({ sessionId, message: 'Device connected and session uploaded' });
-          }
-        } catch (errUpload) {
-          console.warn('Upload failed:', errUpload?.message ?? errUpload);
+        console.log(`✅ Connected for ${sessionId}`);
+
+        // Upload in background
+        saveToSupabase(sessionId, sessionPath).catch(e =>
+          console.warn('Upload failed:', e?.message ?? e)
+        );
+
+        if (res && !res.headersSent) {
+          res.json({ sessionId, message: 'Device connected and session saved' });
         }
-        await delay(5000);
-        cleanup(sessionId, sessionPath, baileysSession);
       }
 
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log(`Connection closed for ${sessionId}. Reason:`, reason);
-        if (reason === DisconnectReason.loggedOut) {
-          cleanup(sessionId, sessionPath, baileysSession);
+        console.log(`⚠️ Connection closed for ${sessionId}. Reason:`, reason);
+
+        if (
+          [DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired].includes(reason)
+        ) {
+          console.log('🔄 Reconnecting...');
+          connector(number, null);
+        } else if (reason === DisconnectReason.loggedOut) {
+          cleanup(sessionId, sessionPath, socket);
         }
       }
     });
-  } catch (error) {
-    console.error('Session creation error:', error?.message ?? error);
-    cleanup(sessionId, sessionPath, baileysSession);
+  } catch (err) {
+    console.error('❌ Session creation error:', err?.message ?? err);
+    cleanup(sessionId, sessionPath, socket);
     if (res && !res.headersSent) {
       res.status(500).json({ error: 'Failed to create session' });
     }
   }
 }
 
+/**
+ * Routes
+ */
 app.get('/pair', async (req, res) => {
   const number = req.query.number || req.query.code;
   if (!number) {
     return res.status(400).json({ message: 'Number required' });
   }
+
   const release = await mutex.acquire();
   try {
     await connector(number, res);
@@ -173,5 +200,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
