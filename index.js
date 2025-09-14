@@ -22,7 +22,7 @@ const port = 7860;
 const sessionDir = './session';
 const msgRetryCounterCache = new NodeCache();
 const mutex = new Mutex();
-
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Ensure session directory exists
 if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
