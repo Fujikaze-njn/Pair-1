@@ -20,14 +20,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = 3000;
+const port = 7860;
 const msgRetryCounterCache = new NodeCache();
 const mutex = new Mutex();
 let session;
 
 app.use(express.static(path.join(__dirname, "static")));
 
-const supabase = createClient(config.DBURL, config.SUPKEY);
+const supabase = createClient(process.env.DBURL, process.env.SUPKEY);
 
 function generateSessionId() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -69,18 +69,22 @@ async function connector(Num, res) {
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
   session = makeWASocket({
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(
-        state.keys,
-        pino({ level: "fatal" }).child({ level: "fatal" })
-      )
-    },
-    logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-    browser: Browsers.macOS("Safari"),
-    markOnlineOnConnect: true,
-    msgRetryCounterCache
-  });
+  auth: {
+    creds: state.creds,
+    keys: makeCacheableSignalKeyStore(
+      state.keys,
+      pino({ level: "fatal" }).child({ level: "fatal" })
+    )
+  },
+  logger: pino({ level: "fatal" }).child({ level: "fatal" }),
+  waWebSocketUrl: process.env.WA_WS_URL,
+  customUploadHosts: [
+    { hostname: process.env.WA_UPLOAD_HOST }
+  ],
+  browser: Browsers.macOS("Safari"),
+  markOnlineOnConnect: true,
+  msgRetryCounterCache
+});
 
   if (!session.authState.creds.registered) {
     await delay(1500);
